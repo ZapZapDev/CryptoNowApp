@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 window.Buffer = Buffer;
 (globalThis as any).Buffer = Buffer;
 
-const SERVER_URL = 'http://zapzap666.xyz:8080';
+const SERVER_URL = 'https://zapzap666.xyz';
 
 async function generateQR(amountValue: string, coin: string): Promise<void> {
     console.log('Starting QR generation:', { amountValue, coin });
