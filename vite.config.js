@@ -4,9 +4,6 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
     plugins: [tailwindcss()],
     root: 'src',
-    optimizeDeps: {
-        include: ['@solana/pay', '@solana/web3.js', 'buffer']
-    },
     define: {
         global: 'globalThis',
     },
@@ -14,5 +11,13 @@ export default defineConfig({
         alias: {
             buffer: 'buffer'
         }
-    }
+    },
+    optimizeDeps: {
+        include: ['@solana/pay', '@solana/web3.js', 'buffer']
+    },
+    build: {
+        rollupOptions: {
+            external: [],
+        },
+    },
 });
