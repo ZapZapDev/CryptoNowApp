@@ -69,8 +69,14 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
         if (data.success && data.data?.solana_pay_url) {
             const paymentData: PaymentData = data.data;
 
-            // Создаем QR код через сервер (используем qrService)
-            console.log('🎨 Generating QR code through server...');
+            // Проверяем что Solana Pay URL правильный
+            console.log('🔍 Checking Solana Pay URL:', {
+                url: paymentData.solana_pay_url,
+                hasPrefix: paymentData.solana_pay_url.startsWith('solana:')
+            });
+
+            // Проверяем есть ли QR код от сервера
+            console.log('🔍 Server QR code available:', !!data.data.qr_code);
 
             // Показываем информацию о платеже
             paymentInfo.innerHTML = `
@@ -88,15 +94,27 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
             const qrCodeWrapper = document.createElement('div');
             qrCodeWrapper.className = 'qr-code-wrapper';
 
-            // Просто создаем QR код через внешний сервис или используем простой метод
-            const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(paymentData.solana_pay_url)}`;
-
             const qrImage = document.createElement('img');
-            qrImage.src = qrCodeUrl;
             qrImage.alt = 'CryptoNow Payment QR Code';
             qrImage.style.maxWidth = '300px';
             qrImage.style.maxHeight = '300px';
             qrImage.style.borderRadius = '12px';
+
+            // ✅ ИСПРАВЛЕНИЕ: Используем QR от сервера если есть, иначе внешний сервис
+            if (data.data.qr_code) {
+                console.log('✅ Using server-generated QR code');
+                qrImage.src = data.data.qr_code; // Base64 QR от сервера с правильным solana: префиксом
+            } else {
+                console.log('⚠️ Fallback to external QR service');
+                const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(paymentData.solana_pay_url)}`;
+                console.log('🎨 External QR Code URL:', qrCodeUrl);
+                qrImage.src = qrCodeUrl;
+            }
+
+            qrImage.onerror = () => {
+                console.error("QR image failed to load");
+                showError("QR code image failed to load");
+            };
 
             qrCodeWrapper.appendChild(qrImage);
             qrContainer.appendChild(qrCodeWrapper);
@@ -203,7 +221,7 @@ function hideSelectors(): void {
 
 async function testServerConnection(): Promise<boolean> {
     try {
-        console.log('🔗 Testing server connection...');
+        console.log('🔗 Testing server connection to:', SERVER_URL);
 
         const response = await fetch(`${SERVER_URL}/api/test`, {
             method: 'GET',
@@ -228,6 +246,7 @@ async function testServerConnection(): Promise<boolean> {
 
 window.addEventListener("DOMContentLoaded", async () => {
     console.log('🚀 CryptoNow Payment Setup loaded');
+    console.log('🔗 Server URL:', SERVER_URL);
 
     // Тестируем соединение с сервером
     const serverAvailable = await testServerConnection();
@@ -264,7 +283,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     dropdownBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
-        console.log('Dropdown button clicked!'); // Для отладки
+        console.log('Dropdown button clicked!');
         dropdownContent?.classList.toggle("hidden");
         dropdownArrow?.classList.toggle("dropdown-arrow-rotate");
     });
