@@ -100,15 +100,14 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
             qrImage.style.maxHeight = '300px';
             qrImage.style.borderRadius = '12px';
 
-            // ✅ ИСПРАВЛЕНИЕ: Используем QR от сервера если есть, иначе внешний сервис
+            // ✅ ТОЛЬКО СЕРВЕРНЫЙ QR - убираем локальную генерацию
             if (data.data.qr_code) {
                 console.log('✅ Using server-generated QR code');
-                qrImage.src = data.data.qr_code; // Base64 QR от сервера с правильным solana: префиксом
+                qrImage.src = data.data.qr_code; // Base64 QR от сервера
             } else {
-                console.log('⚠️ Fallback to external QR service');
-                const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(paymentData.solana_pay_url)}`;
-                console.log('🎨 External QR Code URL:', qrCodeUrl);
-                qrImage.src = qrCodeUrl;
+                console.error('❌ No QR code received from server');
+                showError("Server did not provide QR code");
+                return;
             }
 
             qrImage.onerror = () => {
