@@ -17,6 +17,25 @@ interface PaymentData {
     };
 }
 
+interface PaymentStatusResponse {
+    success: boolean;
+    data: {
+        id: string;
+        status: string;
+        merchant: string;
+        amount: number;
+        token: string;
+        signature: string;
+        createdAt: string;
+        verifiedAt: string;
+        expiresAt: string;
+        dual_transfers_completed?: boolean;
+    };
+}
+
+// Глобальная переменная для отслеживания времени создания платежа
+let paymentCreatedTime: number = 0;
+
 async function generatePayment(amountValue: string, coin: string): Promise<void> {
     console.log('🛒 Creating CryptoNow payment:', { amountValue, coin });
 
@@ -25,11 +44,6 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
     const publicKeyString = localStorage.getItem("walletAddress");
 
     if (!publicKeyString || !amountValue || isNaN(Number(amountValue)) || Number(amountValue) <= 0) {
-        console.error('Validation failed:', {
-            publicKeyString: !!publicKeyString,
-            amountValue,
-            isValid: !isNaN(Number(amountValue)) && Number(amountValue) > 0
-        });
         showError("Invalid wallet address or amount");
         return;
     }
@@ -37,7 +51,9 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
     showLoader(qrContainer, paymentInfo);
 
     try {
-        console.log('📤 Creating payment on server...');
+        // ИСПРАВЛЕНИЕ: Запоминаем время создания платежа
+        paymentCreatedTime = Date.now();
+        console.log('⏰ Payment created at:', new Date(paymentCreatedTime).toISOString());
 
         const response = await fetch(`${SERVER_URL}/api/payment/create`, {
             method: 'POST',
@@ -55,30 +71,17 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
             })
         });
 
-        console.log('📥 Server response status:', response.status);
-
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('Server error response:', errorText);
             throw new Error(`Server error: ${response.status} - ${errorText}`);
         }
 
         const data = await response.json();
-        console.log('✅ Payment created:', data);
 
         if (data.success && data.data?.solana_pay_url) {
             const paymentData: PaymentData = data.data;
 
-            // Проверяем что Solana Pay URL правильный
-            console.log('🔍 Checking Solana Pay URL:', {
-                url: paymentData.solana_pay_url,
-                hasPrefix: paymentData.solana_pay_url.startsWith('solana:')
-            });
-
-            // Проверяем есть ли QR код от сервера
-            console.log('🔍 Server QR code available:', !!data.data.qr_code);
-
-            // Показываем информацию о платеже
+            // Показываем базовую информацию о платеже
             paymentInfo.innerHTML = `
                 <div class="text-center">
                     <div class="text-22 font-bold text-white mb-1 leading-tight">${amountValue} ${coin}</div>
@@ -87,7 +90,7 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
                 </div>
             `;
 
-            // Создаем QR код как изображение
+            // Создаем QR код
             const existingQR = qrContainer.querySelector('.qr-code-wrapper');
             if (existingQR) existingQR.remove();
 
@@ -100,20 +103,14 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
             qrImage.style.maxHeight = '300px';
             qrImage.style.borderRadius = '12px';
 
-            // ✅ ТОЛЬКО СЕРВЕРНЫЙ QR - убираем локальную генерацию
             if (data.data.qr_code) {
-                console.log('✅ Using server-generated QR code');
-                qrImage.src = data.data.qr_code; // Base64 QR от сервера
+                qrImage.src = data.data.qr_code;
             } else {
-                console.error('❌ No QR code received from server');
                 showError("Server did not provide QR code");
                 return;
             }
 
-            qrImage.onerror = () => {
-                console.error("QR image failed to load");
-                showError("QR code image failed to load");
-            };
+            qrImage.onerror = () => showError("QR code image failed to load");
 
             qrCodeWrapper.appendChild(qrImage);
             qrContainer.appendChild(qrCodeWrapper);
@@ -121,17 +118,13 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
             qrContainer.style.display = "flex";
             hideSelectors();
 
-            // Начинаем мониторинг платежа
-            startPaymentMonitoring(paymentData.id, paymentInfo);
+            // Начинаем мониторинг ТОЛЬКО успеха с проверкой времени
+            startSuccessMonitoring(paymentData.id, paymentInfo, qrContainer);
 
-            console.log('✅ QR code generated successfully for payment:', paymentData.id);
         } else {
-            console.error('Invalid server response structure:', data);
             throw new Error('Invalid server response - missing payment data');
         }
     } catch (error: any) {
-        console.error('❌ Payment generation failed:', error);
-
         if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
             showError("Connection failed - check server status");
         } else {
@@ -140,50 +133,129 @@ async function generatePayment(amountValue: string, coin: string): Promise<void>
     }
 }
 
-function startPaymentMonitoring(paymentId: string, paymentInfo: HTMLDivElement): void {
-    console.log('👀 Starting payment monitoring for:', paymentId);
+function startSuccessMonitoring(paymentId: string, paymentInfo: HTMLDivElement, qrContainer: HTMLDivElement): void {
+    console.log('👀 Starting SUCCESS-ONLY monitoring for:', paymentId);
+    console.log('⏰ Monitoring transactions after:', new Date(paymentCreatedTime).toISOString());
+
+    let checkCount = 0;
+    let hasShownSuccess = false; // ИСПРАВЛЕНИЕ: Флаг чтобы показать успех только один раз
 
     const checkInterval = setInterval(async () => {
+        checkCount++;
+        console.log(`🔄 Check #${checkCount} for payment:`, paymentId);
+
         try {
             const response = await fetch(`${SERVER_URL}/api/payment/${paymentId}/status`);
 
-            if (response.ok) {
-                const data = await response.json();
-
-                if (data.success && data.data.status === 'completed') {
-                    console.log('✅ Payment completed!', data.data);
-                    clearInterval(checkInterval);
-
-                    paymentInfo.innerHTML = `
-                        <div class="text-center">
-                            <div class="text-green-400 text-lg font-bold mb-2">✅ Payment Completed!</div>
-                            <div class="text-white text-sm mb-1">${data.data.amount} ${data.data.token}</div>
-                            <div class="text-xs text-crypto-text-muted">
-                                Signature: ${data.data.signature?.slice(0, 8)}...
-                            </div>
-                        </div>
-                    `;
-
-                    // Скрываем QR код через 3 секунды
-                    setTimeout(() => {
-                        const qrContainer = document.getElementById("qrcode") as HTMLDivElement;
-                        if (qrContainer) {
-                            qrContainer.style.display = 'none';
-                        }
-                    }, 3000);
-                }
+            if (!response.ok) {
+                console.error('❌ Bad response:', response.status);
+                return;
             }
 
-        } catch (error) {
-            console.error('❌ Payment monitoring error:', error);
-        }
-    }, 3000); // Проверяем каждые 3 секунды
+            const data: PaymentStatusResponse = await response.json();
+            console.log('📊 Status check:', {
+                status: data.data.status,
+                hasSignature: !!data.data.signature,
+                dualTransfersCompleted: data.data.dual_transfers_completed,
+                verifiedAt: data.data.verifiedAt
+            });
 
-    // Останавливаем мониторинг через 10 минут
+            if (data.success && !hasShownSuccess) {
+                // ПРОВЕРКА: Транзакция должна быть создана ПОСЛЕ нашего платежа
+                if (data.data.dual_transfers_completed === true && data.data.signature && data.data.verifiedAt) {
+                    const verifiedTime = new Date(data.data.verifiedAt).getTime();
+                    const timeDiff = verifiedTime - paymentCreatedTime;
+
+                    console.log('⏰ Time check:', {
+                        paymentCreated: new Date(paymentCreatedTime).toISOString(),
+                        transactionVerified: new Date(verifiedTime).toISOString(),
+                        timeDifferenceMinutes: Math.round(timeDiff / 60000)
+                    });
+
+                    // ИСПРАВЛЕНИЕ: Принимаем только транзакции, созданные после нашего платежа
+                    if (timeDiff >= -60000) { // Даем 1 минуту погрешности на время сервера
+                        console.log('🎉 VALID DUAL TRANSFER FOUND!');
+                        hasShownSuccess = true;
+                        clearInterval(checkInterval);
+                        showSuccessWithHash(paymentInfo, qrContainer, data.data.signature);
+                    } else {
+                        console.log('⚠️ Found old transaction, ignoring. Age:', Math.round(-timeDiff / 60000), 'minutes');
+                    }
+                } else if (data.data.status === 'completed' && data.data.signature && data.data.verifiedAt) {
+                    // Fallback с той же проверкой времени
+                    const verifiedTime = new Date(data.data.verifiedAt).getTime();
+                    const timeDiff = verifiedTime - paymentCreatedTime;
+
+                    if (timeDiff >= -60000) {
+                        console.log('✅ Payment completed (fallback)');
+                        hasShownSuccess = true;
+                        clearInterval(checkInterval);
+                        showSuccessWithHash(paymentInfo, qrContainer, data.data.signature);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('❌ Monitor error:', error);
+        }
+    }, 3000);
+
+    // Таймаут 10 минут
     setTimeout(() => {
+        console.log('⏰ Payment monitoring timeout after', checkCount, 'checks');
         clearInterval(checkInterval);
-        console.log('⏰ Payment monitoring timeout');
     }, 10 * 60 * 1000);
+}
+
+function showSuccessWithHash(paymentInfo: HTMLDivElement, qrContainer: HTMLDivElement, signature: string): void {
+    console.log('✅ Showing success with transaction hash:', signature);
+
+    // ИСПРАВЛЕНИЕ: Полностью очищаем контейнер перед добавлением нового контента
+    qrContainer.innerHTML = '';
+
+    // Показываем успех с хешем транзакции
+    const successContent = document.createElement('div');
+    successContent.className = 'success-content text-center p-6';
+
+    successContent.innerHTML = `
+        <div class="text-green-400 text-xl font-bold mb-4">🎉 Both transfers completed!</div>
+        
+        <div class="text-white text-sm mb-4">
+            Transaction confirmed on Solana blockchain
+        </div>
+        
+        <div class="bg-crypto-card border border-crypto-border rounded-lg p-4 mb-4">
+            <div class="text-crypto-text-muted text-xs mb-2">Transaction Hash:</div>
+            <div class="text-white text-xs font-mono break-all mb-3">${signature}</div>
+            
+            <a 
+                href="https://solscan.io/tx/${signature}" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors duration-200 inline-flex items-center gap-2"
+            >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                    <polyline points="15,3 21,3 21,9"/>
+                    <line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+                View on Solscan
+            </a>
+        </div>
+        
+        <div class="text-xs text-crypto-text-muted">
+            Merchant payment + CryptoNow fee confirmed
+        </div>
+    `;
+
+    qrContainer.appendChild(successContent);
+    qrContainer.style.display = "flex";
+
+    // Обновляем информацию о платеже
+    paymentInfo.innerHTML = `
+        <div class="text-center">
+            <div class="text-green-400 text-lg font-bold">✅ Payment Complete</div>
+        </div>
+    `;
 }
 
 function showLoader(qrContainer: HTMLDivElement, paymentInfo: HTMLDivElement): void {
@@ -220,36 +292,17 @@ function hideSelectors(): void {
 
 async function testServerConnection(): Promise<boolean> {
     try {
-        console.log('🔗 Testing server connection to:', SERVER_URL);
-
-        const response = await fetch(`${SERVER_URL}/api/test`, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json'
-            }
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            console.log('✅ Server test successful:', data);
-            return true;
-        } else {
-            console.error('❌ Server test failed with status:', response.status);
-            return false;
-        }
+        const response = await fetch(`${SERVER_URL}/api/test`);
+        return response.ok;
     } catch (error) {
-        console.error('❌ Server connection test failed:', error);
         return false;
     }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
     console.log('🚀 CryptoNow Payment Setup loaded');
-    console.log('🔗 Server URL:', SERVER_URL);
 
-    // Тестируем соединение с сервером
     const serverAvailable = await testServerConnection();
-    console.log('Server available:', serverAvailable);
 
     const dropdownBtn = document.getElementById("dropdownBtn") as HTMLButtonElement;
     const dropdownContent = document.getElementById("dropdownContent") as HTMLDivElement;
@@ -261,28 +314,21 @@ window.addEventListener("DOMContentLoaded", async () => {
     const amountInput = document.getElementById("amountInput") as HTMLInputElement;
     const generateBtn = document.getElementById("generateBtn") as HTMLButtonElement;
 
-    let selectedCoin = "USDC"; // По умолчанию USDC
+    let selectedCoin = "USDC";
 
-    if (qrContainer) {
-        qrContainer.style.display = "none";
-    }
+    if (qrContainer) qrContainer.style.display = "none";
 
     // Показываем статус сервера
-    if (!serverAvailable) {
-        const statusDiv = document.createElement('div');
-        statusDiv.className = 'text-xs text-red-400 text-center mb-4 px-4 py-2 bg-crypto-card border border-crypto-border rounded-lg';
-        statusDiv.innerHTML = '❌ CryptoNow server unavailable';
-        dropdownBtn?.parentNode?.insertBefore(statusDiv, dropdownBtn);
-    } else {
-        const statusDiv = document.createElement('div');
-        statusDiv.className = 'text-xs text-green-400 text-center mb-4 px-4 py-2 bg-crypto-card border border-crypto-border rounded-lg';
-        statusDiv.innerHTML = '✅ CryptoNow server connected';
-        dropdownBtn?.parentNode?.insertBefore(statusDiv, dropdownBtn);
-    }
+    const statusDiv = document.createElement('div');
+    statusDiv.className = `text-xs text-center mb-4 px-4 py-2 bg-crypto-card border border-crypto-border rounded-lg ${
+        serverAvailable ? 'text-green-400' : 'text-red-400'
+    }`;
+    statusDiv.innerHTML = serverAvailable ? '✅ CryptoNow server connected' : '❌ CryptoNow server unavailable';
+    dropdownBtn?.parentNode?.insertBefore(statusDiv, dropdownBtn);
 
+    // Event listeners
     dropdownBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
-        console.log('Dropdown button clicked!');
         dropdownContent?.classList.toggle("hidden");
         dropdownArrow?.classList.toggle("dropdown-arrow-rotate");
     });
